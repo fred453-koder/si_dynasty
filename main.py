@@ -1,158 +1,109 @@
 import feedparser
-import time
 import openai
 import tldextract
-import re
+import logging
 from datetime import datetime, timedelta
 from telegram import Bot
+from telegram.error import TelegramError
 import os
+import time
 
-# === НАСТРОЙКИ ===
-TELEGRAM_TOKEN = "7725055774:AAHRf_3tfVO-ZufWBZZpTT92P5WQS5GRoUQ"
-CHANNEL_ID = "@xi_dynasty"
-OPENAI_API_KEY = "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"
+# ====== Налаштування ======
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-POSTED_LINKS_FILE = "posted_links.txt"
-
-RSS_FEEDS = [
-    "http://www.xinhuanet.com/english/rss/worldrss.xml",
-    "http://www.chinadaily.com.cn/rss/china_rss.xml",
-    "https://www.scmp.com/rss/91/feed",
-    "https://www.fmprc.gov.cn/mfa_eng/rss.xml",
-    "https://thediplomat.com/feed/",
-    "https://www.asiapacificsecuritymagazine.com/feed/",
-    "https://www.indiatoday.in/rss/1206514",
-    "https://eastasiaforum.org/feed/",
-    "https://venturebeat.com/category/ai/feed/"
-]
-
-KEYWORDS = [
-    "China", "Beijing", "Taiwan", "Xi Jinping", "PLA", "Chinese military",
-    "AI", "artificial intelligence", "drones", "semiconductors",
-    "Silk Road", "BRI", "space program", "spy balloon", "trade war", "sanctions",
-    "army", "tariffs", "USA", "Ukraine", "Zelensky", "Putin", "Moscow",
-    "war", "deal", "business", "investments", "condemned", "official visit",
-    "Taiwan", "oil", "gas", "yuan", "Indo-Pacific", "ASEAN", "Blinken",
-    "Biden", "South China Sea", "diplomacy", "Philippines", "maritime", "nuclear"
-]
-
-EXCLUDE_PATTERNS = [
-    "crash", "accident", "injured", "fire", "killed", "police", "arrested",
-    "dies", "dead", "murder", "suicide", "hospital"
-]
-
-bot = Bot(token=TELEGRAM_TOKEN)
 openai.api_key = OPENAI_API_KEY
 
-def send_message_safe(text):
-    try:
-        bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=text,
-            parse_mode='HTML',
-            disable_web_page_preview=True,
-            timeout=20
-        )
-    except Exception as e:
-        print(f"Ошибка отправки сообщения в Telegram: {e}")
+bot = Bot(token=TELEGRAM_TOKEN)
 
-def extract_source(url):
-    ext = tldextract.extract(url)
-    if ext.domain == "scmp":
-        return "South China Morning Post"
-    return ext.domain.capitalize()
+# ====== RSS джерела ======
+FEEDS = [
+    "http://www.xinhuanet.com/english/rss/worldrss.xml",
+    "http://www.chinadaily.com.cn/rss/china_rss.xml",
+    "https://www.scmp.com/rss/91/feed"
+]
 
+# ====== Ключові теми ======
+KEYWORDS = ["China", "Chinese", "Beijing", "Xi Jinping", "PLA", "Taiwan", "BRI", "AI", "drones", "military", "investment", "chip", "semiconductor"]
+
+# ====== Історія новин для антиповтору ======
+posted_links = set()
+
+# ====== Обробка одного RSS ======
+def parse_feed(feed_url):
+    print(f"Потік: {feed_url}")
+    feed = feedparser.parse(feed_url)
+    for entry in feed.entries:
+        link = entry.link
+        title = entry.title.strip()
+        summary = entry.summary.strip()
+        published = entry.get("published_parsed")
+
+        if not published:
+            continue
+
+        date = datetime.fromtimestamp(time.mktime(published))
+        if datetime.utcnow() - date > timedelta(hours=72):
+            print(f"Пропущено: стара новина — {title}")
+            continue
+
+        if link in posted_links:
+            continue
+
+        if not any(keyword.lower() in title.lower() for keyword in KEYWORDS):
+            print(f"Пропущено: не по ключовим словам — {title}")
+            continue
+
+        print(f"[OK] {title}")
+        rewritten = rewrite_news(title, summary, extract_source_name(link))
+        post_to_telegram(rewritten)
+        posted_links.add(link)
+        time.sleep(1)
+
+# ====== Перепис новини через OpenAI ======
 def rewrite_news(title, summary, source):
     prompt = f"""
-Ти працюєш як команда з трьох професіоналів:
-1. журналіст — викладає суть подій;
-2. аналітик — формулює короткий прогноз;
-3. редактор-перекладач — адаптує текст українською без суржику і кальки.
+Ти — аналітичний редактор. Перепиши новину з таким форматом:
 
-Твоя задача — створити пост для аналітичного Telegram-каналу про геополітику Китаю. Якщо джерело — це публіцистика або колонка, перероби її в короткий виклад і додай прогноз. Якщо інформація слабка або вторинна — краще нічого не пиши.
+1. **Жирний заголовок** — лаконічний, але провокативний.
+2. 1-й абзац — стисле викладення події.
+3. 2-й абзац — аналітичне доповнення з фактами чи цифрами.
+4. 3-й абзац у форматі `code` — короткий прогноз на основі події.
+5. 4-й абзац — курсивна цитата одного китайського мислителя (Сунь Цзи, Мао, Дэн Сяопин, Хань Фей-цзи) відповідно до теми.
+6. 5-й абзац — _Підписуйся на Династію_
 
-📌 Формат:
-1. <b>Жирний заголовок</b>
-2. Перший абзац — виклад подій
-3. Другий абзац — аналітичне пояснення
-4. <b>Прогноз:</b> у вигляді абзацу, без тега <code>
-5. <i>Цитата китайського мислителя</i> — з іменем автора
-6. “Підписуйся на Династію 🛸”
-7. 📌 Джерело: {source}
-
-✍️ Обов'язково:
-- Кожне речення — не довше 14 слів.
-- Уникай складнопідрядних речень і канцеляризмів.
-- Перевіряй правильність відмінків.
-- Не додавай зайвого пафосу. Пиши лаконічно, сильно і смачно.
-- Якщо це авторська колонка — згадай автора у другому абзаці.
-- Діли складні речення на два. Не бійся крапок.
-
-Заголовок: {title}
+Подія: {title}
 Опис: {summary}
+Джерело: {source}
+Мова: українська
 """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
+    response = openai.chat.completions.create(
+        model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "Ти працюєш як команда журналіста, аналітика і редактора. Створюєш стратегічні публікації для аналітичного Telegram-каналу про Китай. Вмієш відрізняти новину від публіцистики і не вигадуєш інформацію."},
+            {"role": "system", "content": "Ти — аналітичний редактор українського Telegram-каналу про політику Китаю."},
             {"role": "user", "content": prompt}
-        ]
+        ],
+        temperature=0.7
     )
+    return response.choices[0].message.content
 
-    return response.choices[0].message.content.strip().replace("Рідпишись", "Підпишись")
+# ====== Вивантаження в Telegram ======
+def post_to_telegram(text):
+    try:
+        bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=text, parse_mode='Markdown')
+    except TelegramError as e:
+        logging.error(f"Помилка Telegram: {e}")
 
-def load_posted_links():
-    if not os.path.exists(POSTED_LINKS_FILE):
-        return set()
-    with open(POSTED_LINKS_FILE, "r") as f:
-        return set(line.strip() for line in f)
+# ====== Джерело з URL ======
+def extract_source_name(url):
+    extracted = tldextract.extract(url)
+    return f"{extracted.domain}.{extracted.suffix}"
 
-def save_posted_link(link):
-    with open(POSTED_LINKS_FILE, "a") as f:
-        f.write(link + "\n")
-
-if __name__ == "__main__":
+# ====== Старт ======
+if __name__ == '__main__':
     print("Скрипт запущен — починаємо обробку RSS")
-    posted_links = load_posted_links()
-
-    for feed_url in RSS_FEEDS:
-        print(f"Потік: {feed_url}")
-        feed = feedparser.parse(feed_url)
-
-        for entry in feed.entries[:10]:
-            if not hasattr(entry, 'published_parsed'):
-                print(f"Пропущено: немає дати — {entry.get('title', '')}")
-                continue
-
-            published = datetime.fromtimestamp(time.mktime(entry.published_parsed))
-            if datetime.now() - published > timedelta(hours=96):
-                print(f"Пропущено: стара новина — {entry.get('title', '')}")
-                continue
-
-            title = entry.get("title", "[Без заголовка]")
-            summary = re.sub('<[^<]+?>', '', entry.get("summary", ""))
-            link = entry.get("link", "[Без посилання]")
-
-            if link in posted_links:
-                print(f"Пропущено: вже було — {title}")
-                continue
-
-            combined_text = f"{title} {summary}".lower()
-
-            if not any(keyword.lower() in combined_text for keyword in KEYWORDS):
-                print(f"Пропущено: не по ключовим словам — {title}")
-                continue
-
-            if any(pattern in combined_text for pattern in EXCLUDE_PATTERNS):
-                print(f"Пропущено: побут/ДТП — {title}")
-                continue
-
-            print(f"[OK] {title}\n{link}\n")
-
-            source = extract_source(link)
-            rewritten = rewrite_news(title, summary, source)
-            send_message_safe(rewritten)
-            save_posted_link(link)
-
-        time.sleep(1)
+    for feed in FEEDS:
+        parse_feed(feed)
+        time.sleep(2)
