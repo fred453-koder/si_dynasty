@@ -93,15 +93,13 @@ def rewrite_news(title, summary, source):
 """
 
 
-    response = openai.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "Ти — аналітичний редактор українського Telegram-каналу про політику Китаю."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.7
-    )
-    return response.choices[0].message.content
+    response = openai.ChatCompletion.create(
+    model="gpt-3.5-turbo",
+    messages=messages,
+    temperature=0.6,
+)
+content = response['choices'][0]['message']['content']
+
 
 # ====== Вивантаження в Telegram ======
 def post_to_telegram(text):
