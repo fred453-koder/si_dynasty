@@ -123,7 +123,7 @@ if __name__ == '__main__':
         parse_feed(feed)
         time.sleep(2)
 # ====== Тест однієї новини вручну ======
-def test_single_news():
+#def test_single_news():
     test_title = "China to modernize Ream Naval Base in Cambodia amid geopolitical tensions"
     test_summary = "The Chinese government has announced a significant modernization of the Ream Naval Base in Cambodia, including construction of new docks and training centers. Experts believe this move is aimed at increasing China’s regional maritime influence and ensuring supply chain security."
     test_source = "scmp.com"
