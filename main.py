@@ -40,33 +40,32 @@ posted_links = set()
 # ====== Обробка одного RSS ======
 def parse_feed(feed_url):
     print(f"Потік: {feed_url}")
-    feed = feedparser.parse(feed_url)
-    for entry in feed.entries:
-        link = entry.link
-        title = entry.title.strip()
-        summary = entry.summary.strip()
-        published = entry.get("published_parsed")
+    try:
+        feed = feedparser.parse(feed_url)
+        for entry in feed.entries:
+            title = entry.get('title', '')
+            summary = entry.get('summary', '')
+            link = entry.get('link', '')
+            published = entry.get('published', '')
 
-        if not published:
-            continue
+            # ===== Фільтр дати (тимчасово на 720 годин для тесту) =====
+            if 'published_parsed' in entry:
+                pub_date = datetime.fromtimestamp(time.mktime(entry.published_parsed))
+                if datetime.now() - pub_date > timedelta(hours=720):  # було 72
+                    print(f"Пропущено: стара новина — {title}")
+                    continue
 
-        date = datetime.fromtimestamp(time.mktime(published))
-        if datetime.utcnow() - date > timedelta(hours=72):
-            print(f"Пропущено: стара новина — {title}")
-            continue
+            if not any(kw.lower() in title.lower() for kw in KEYWORDS):
+                continue
 
-        if link in posted_links:
-            continue
+            source = extract_source_name(link)
+            rewritten = rewrite_news(title, summary, source)
+            post_to_telegram(rewritten)
+            posted_links.add(link)
 
-        if not any(keyword.lower() in title.lower() for keyword in KEYWORDS):
-            print(f"Пропущено: не по ключовим словам — {title}")
-            continue
+    except Exception as e:
+        print(f"❌ Помилка обробки стрічки {feed_url}: {e}")
 
-        print(f"[OK] {title}")
-        rewritten = rewrite_news(title, summary, extract_source_name(link))
-        post_to_telegram(rewritten)
-        posted_links.add(link)
-        time.sleep(1)
 
 # ====== Перепис новини через OpenAI ======
 def rewrite_news(title, summary, source):
