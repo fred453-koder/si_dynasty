@@ -133,4 +133,4 @@ def test_single_news():
     print(rewritten)
 
 # Виклик тесту:
-test_single_news()
+#test_single_news()
